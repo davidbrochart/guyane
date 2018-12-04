@@ -47,7 +47,7 @@ class Log:
             self.f.write(string)
             self.f.flush()
 
-def ftp_login(url, login, log, seconds=60):
+def ftp_login(url, login, wd, log, seconds=60):
     """Try to log into 'url' using 'login' for user and passwd.
     Retry every 'seconds'."""
     logged_in = False
@@ -69,6 +69,8 @@ def ftp_login(url, login, log, seconds=60):
                 log.write(f'Will retry in {seconds} seconds')
                 sleep(seconds)
         log.write(f'Logged into {url}')
+    ftp.cwd(wd)
+    log.write(f'Changed directory to {wd}')
     return ftp
 
 def get_new_files(login, url, log, ftp_dst_dir, from_time, reset=False):
@@ -79,10 +81,7 @@ def get_new_files(login, url, log, ftp_dst_dir, from_time, reset=False):
     from_time_dt = datetime(*(int(i) for i in from_time.split('-')))
 
     # log into FTP server
-    ftp = ftp_login(url, login, log)
-
-    # change to IMERG "early run" estimate directory
-    ftp.cwd('NRTPUB/imerg/early')
+    ftp = ftp_login(url, login, 'NRTPUB/imerg/early', log)
 
     # get list of directories, one directory per month (e.g. 201801)
     dir_list = []
@@ -157,12 +156,11 @@ def get_new_files(login, url, log, ftp_dst_dir, from_time, reset=False):
 
     ftp.quit()
 
-def shrink(login, url, log, src_path, shrink_dir, utc_offset, ftp_dst_dir, keepgpm, reset=False):
+def shrink(login, url, log, src_path, shrink_dir, utc_offset, keepgpm, reset=False):
     """Shrink the original GPM files to 6N-1N/57W-51W (French Guiana region). Original files are located in 'src_path' and shrunk files in 'shrink_dir'."""
-    ftp = ftp_login(url, login, log)
-    ftp.cwd('NRTPUB/imerg/early')
+    ftp = ftp_login(url, login, 'NRTPUB/imerg/early', log)
 
-    file_df = pd.read_pickle(f'{ftp_dst_dir}/file_df.pkl')
+    file_df = pd.read_pickle(f'{src_path}/file_df.pkl')
     mask = pickle.load(open(shrink_dir + '/corr/mask.pkl', 'rb'))
     p_corr_vs_sat_per_month_per_region = pickle.load(open(shrink_dir + '/corr/p_corr_vs_sat_per_month_per_region.pkl', 'rb'))
 
@@ -181,15 +179,22 @@ def shrink(login, url, log, src_path, shrink_dir, utc_offset, ftp_dst_dir, keepg
         log.write(f'Processing file {filename}')
         ftpdir = file_df[file_df.name==filename]['dir'].values[0]
         path = f'{ftpdir}/{filename}'
-        processed_files.append(f'{ftp_dst_dir}/{filename}')
-        if os.path.exists(f'{ftp_dst_dir}/{filename}'):
+        processed_files.append(f'{src_path}/{filename}')
+        try:
+            f = h5py.File(f'{src_path}/{filename}', 'r')
             log.write(f'Already downloaded')
-        else:
+        except:
             log.write(f'Downloading')
-            with open(f'{ftp_dst_dir}/{filename}', 'wb') as f:
-                ftp.retrbinary(f'RETR {path}', f.write)
+            with open(f'{src_path}/{filename}', 'wb') as f:
+                downloaded = False
+                while not downloaded:
+                    try:
+                        ftp.retrbinary(f'RETR {path}', f.write)
+                        downloaded = True
+                    except:
+                        ftp = ftp_login(url, login, 'NRTPUB/imerg/early', log)
+            f = h5py.File(f'{src_path}/{filename}', 'r')
         file_date = file_df.index[file_df.name==filename][0].to_pydatetime() - timedelta(hours=utc_offset)
-        f = h5py.File(f'{src_path}/{filename}', 'r')
         data = np.array(f['Grid/precipitationCal'])[x0:x1, y0:y1].transpose()[::-1] / 2 # divide by 2 because in mm/h
         np.clip(data, 0, np.inf, out=data)
         f.close()
@@ -398,7 +403,7 @@ def main(reset, logfile, printout, keepgpm, login, fromdate):
     ws_names = list(gr4j_x.keys())
     while True: # program main loop
         get_new_files(login, url, log, ftp_dst_dir, fromdate, reset)
-        shrink(login, url, log, ftp_dst_dir, shrink_dir, utc_offset, ftp_dst_dir, keepgpm, reset)
+        shrink(login, url, log, ftp_dst_dir, shrink_dir, utc_offset, keepgpm, reset)
         make_p_csv(shrink_dir, csv_dir, p_day_nb)
         get_pe_ws(shrink_dir, ws_dir, ws_names, reset)
         get_q_ws(ws_dir, ws_names, gr4j_x)
