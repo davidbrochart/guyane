@@ -44,7 +44,7 @@ class Log:
         if self.printout:
             print(string)
         if self.f is not None:
-            self.f.write(string)
+            self.f.write(f'{string}\n')
             self.f.flush()
 
 def ftp_login(url, login, wd, log, seconds=60):
@@ -75,7 +75,7 @@ def ftp_login(url, login, wd, log, seconds=60):
 
 def get_new_files(login, url, log, ftp_dst_dir, from_time, reset=False):
     if reset or not os.path.exists(f'{ftp_dst_dir}/file_df.pkl'):
-        file_df = DataFrame({'time': [], 'dir': [], 'name': []}).set_index('time')
+        file_df = DataFrame({'time': [], 'dir': [], 'name': [], 'downloaded': []}).set_index('time')
         file_df.to_pickle(f'{ftp_dst_dir}/file_df.pkl')
     file_df = pd.read_pickle(f'{ftp_dst_dir}/file_df.pkl')
     from_time_dt = datetime(*(int(i) for i in from_time.split('-')))
@@ -97,19 +97,19 @@ def get_new_files(login, url, log, ftp_dst_dir, from_time, reset=False):
         # check if we need to enter this directory
         # if the next month is present in the DataFrame,
         # we already downloaded all the data of this month.
-        # if the month is before from_tim, we don't
+        # if the month is before from_time, we don't
         # want to download the data
-        enter_monthdir = False
+        enter_monthdir = True#False
         if datetime(year, month, calendar.monthrange(year, month)[1]) < from_time_dt:
             pass
         elif len(file_df) == 0:
             enter_monthdir = True
         else:
             if month == 12:
-                if len(file_df.loc[f'{year+1}-01':]) == 0:
+                if len(file_df[file_df.downloaded==False].loc[f'{year+1}-01':]) == 0:
                     enter_monthdir = True
             else:
-                if len(file_df.loc[f'{year}-{str(month+1).zfill(2)}':]) == 0:
+                if len(file_df[file_df.downloaded==False].loc[f'{year}-{str(month+1).zfill(2)}':]) == 0:
                     enter_monthdir = True
         if enter_monthdir:
             ftp.cwd(yearmonth)
@@ -133,10 +133,9 @@ def get_new_files(login, url, log, ftp_dst_dir, from_time, reset=False):
                         # get the files that we have not already downloaded
                         append_file = False
                         if len(file_df) == 0:
-                            if t >= from_time_dt:
-                                append_file = True
+                            append_file = True
                         else:
-                            if t not in file_df.loc[from_time:].index:
+                            if (t not in file_df.loc[from_time:].index) or (file_df.loc[t, 'downloaded'] == False):
                                 append_file = True
                         if append_file:
                             log.write(f'Will download {filename}')
@@ -146,6 +145,7 @@ def get_new_files(login, url, log, ftp_dst_dir, from_time, reset=False):
             ftp.cwd('..')
     
     newfile_df = DataFrame({'time': times, 'dir': dirs, 'name': names}).set_index('time')
+    newfile_df['downloaded'] = False
     newfile_df = newfile_df.sort_index()
     
     if len(newfile_df) > 0:
@@ -193,6 +193,7 @@ def shrink(login, url, log, src_path, shrink_dir, utc_offset, keepgpm, reset=Fal
                         downloaded = True
                     except:
                         ftp = ftp_login(url, login, 'NRTPUB/imerg/early', log)
+            file_df.loc[file_df.name==filename, 'downloaded'] = True
             f = h5py.File(f'{src_path}/{filename}', 'r')
         file_date = file_df.index[file_df.name==filename][0].to_pydatetime() - timedelta(hours=utc_offset)
         data = np.array(f['Grid/precipitationCal'])[x0:x1, y0:y1].transpose()[::-1] / 2 # divide by 2 because in mm/h
