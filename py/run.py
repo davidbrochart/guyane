@@ -1,6 +1,5 @@
 import click
 import pickle
-from ftplib import FTP, error_perm
 import numpy as np
 from datetime import date, datetime, timedelta
 import calendar
@@ -12,6 +11,8 @@ from zipfile import ZipFile
 from osgeo import gdal
 from gr4j import gr4j
 import h5py
+import subprocess
+import shutil
 import grid
 
 def resize(data, ratio):
@@ -47,204 +48,86 @@ class Log:
             self.f.write(f'{string}\n')
             self.f.flush()
 
-def ftp_login(url, login, wd, log, seconds=60):
-    """Try to log into 'url' using 'login' for user and passwd.
-    Retry every 'seconds'."""
-    logged_in = False
-    while not logged_in:
-        ftp = FTP(url, user=login, passwd=login)
-        try:
-            ftp.login()
-            logged_in = True
-        except error_perm as e:
-            if str(e).endswith('You are already logged in'):
-                logged_in = True
-            else:
-                log.write(f'{e}')
-                try:
-                    ftp.quit()
-                except:
-                    pass
-                log.write(f'Could not log into {url}')
-                log.write(f'Will retry in {seconds} seconds')
-                sleep(seconds)
-        log.write(f'Logged into {url}')
-    ftp.cwd(wd)
-    log.write(f'Changed directory to {wd}')
-    return ftp
+def get_gpm(url, login, log, src_path, shrink_dir, utc_offset, keepgpm, fromdate, reset=False):
+    """Get the original GPM files for 1N-6N/57W-51W (French Guiana region)."""
+    if reset:
+        status = DataFrame(data={'datetime': [], 'date': [], 'p_1d': []}).set_index('datetime')
+        this_datetime = datetime(*(int(i) for i in fromdate.split('-')))
+    else:
+        status = pd.read_pickle(shrink_dir + '/status.p')
+        this_datetime = status.index[-1] + timedelta(minutes=30) # next GPM
 
-def get_new_files(login, url, log, ftp_dst_dir, from_time, reset=False):
-    if reset or not os.path.exists(f'{ftp_dst_dir}/file_df.pkl'):
-        file_df = DataFrame({'time': [], 'dir': [], 'name': [], 'downloaded': []}).set_index('time')
-        file_df.to_pickle(f'{ftp_dst_dir}/file_df.pkl')
-    file_df = pd.read_pickle(f'{ftp_dst_dir}/file_df.pkl')
-    from_time_dt = datetime(*(int(i) for i in from_time.split('-')))
-
-    # log into FTP server
-    ftp = ftp_login(url, login, 'NRTPUB/imerg/early', log)
-
-    # get list of directories, one directory per month (e.g. 201801)
-    dir_list = []
-    ftp.dir(dir_list.append)
-    yearmonth_list = [line.split()[-1] for line in dir_list]
-
-    times = []
-    dirs = []
-    names = []
-    for yearmonth in yearmonth_list:
-        year = int(yearmonth[:4])
-        month = int(yearmonth[4:])
-        # check if we need to enter this directory
-        # if the next month is present in the DataFrame,
-        # we already downloaded all the data of this month.
-        # if the month is before from_time, we don't
-        # want to download the data
-        enter_monthdir = True#False
-        if datetime(year, month, calendar.monthrange(year, month)[1]) < from_time_dt:
-            pass
-        elif len(file_df) == 0:
-            enter_monthdir = True
-        else:
-            if month == 12:
-                if len(file_df[file_df.downloaded==False].loc[f'{year+1}-01':]) == 0:
-                    enter_monthdir = True
-            else:
-                if len(file_df[file_df.downloaded==False].loc[f'{year}-{str(month+1).zfill(2)}':]) == 0:
-                    enter_monthdir = True
-        if enter_monthdir:
-            ftp.cwd(yearmonth)
-            dir_list = []
-            ftp.dir(dir_list.append)
-            filename_list = [line.split()[-1] for line in dir_list]
-            for filename in filename_list:
-                s = 'IMERG.'
-                if s in filename:
-                    i0 = filename.find(s) + len(s)
-                    i1 = filename[i0:].find('.') + i0
-                    time = filename[i0:i1]
-                    year = int(time[:4])
-                    month = int(time[4:6])
-                    day = int(time[6:8])
-                    hour = int(time[10:12])
-                    minu = int(time[12:14]) # start of the 30-minute measurement
-                    minu += 15 # middle of the measurement time range
-                    t = datetime(year, month, day, hour, minu)
-                    if t >= from_time_dt:
-                        # get the files that we have not already downloaded
-                        append_file = False
-                        if len(file_df) == 0:
-                            append_file = True
-                        else:
-                            if (t not in file_df.loc[from_time:].index) or (file_df.loc[t, 'downloaded'] == False):
-                                append_file = True
-                        if append_file:
-                            log.write(f'Will download {filename}')
-                            times.append(t)
-                            dirs.append(yearmonth)
-                            names.append(filename)
-            ftp.cwd('..')
-    
-    newfile_df = DataFrame({'time': times, 'dir': dirs, 'name': names}).set_index('time')
-    newfile_df['downloaded'] = False
-    newfile_df = newfile_df.sort_index()
-    
-    if len(newfile_df) > 0:
-        # download files that are on the FTP server and not in file_df
-        #newfile_df = newfile_df.applymap(lambda x: os.path.basename(x))
-        file_df = pd.concat([file_df, newfile_df])
-        file_df.to_pickle(f'{ftp_dst_dir}/file_df.pkl')
-
-    ftp.quit()
-
-def shrink(login, url, log, src_path, shrink_dir, utc_offset, keepgpm, reset=False):
-    """Shrink the original GPM files to 6N-1N/57W-51W (French Guiana region). Original files are located in 'src_path' and shrunk files in 'shrink_dir'."""
-    ftp = ftp_login(url, login, 'NRTPUB/imerg/early', log)
-
-    file_df = pd.read_pickle(f'{src_path}/file_df.pkl')
     mask = pickle.load(open(shrink_dir + '/corr/mask.pkl', 'rb'))
     p_corr_vs_sat_per_month_per_region = pickle.load(open(shrink_dir + '/corr/p_corr_vs_sat_per_month_per_region.pkl', 'rb'))
 
     x0 = int((-57 - (-180)) / 0.1)
     x1 = int((-51 - (-180)) / 0.1)
-    y0 = int(-(-90 - 1) / 0.1) + 1
-    y1 = int(-(-90 - 6) / 0.1) + 1
+    y0 = int(-(-90 - 1) / 0.1)
+    y1 = int(-(-90 - 6) / 0.1)
 
-    if reset:
-        new_files = file_df.name.values
-        DataFrame(data={'date': np.nan, 'p_1d': np.nan, 'p_30m': new_files}).to_pickle(shrink_dir + '/status.p')
-    status = pd.read_pickle(shrink_dir + '/status.p')
-    new_files = status[status['p_1d'].isnull()]['p_30m'].tolist()
-    processed_files = []
-    for filename in new_files:
-        log.write(f'Processing file {filename}')
-        ftpdir = file_df[file_df.name==filename]['dir'].values[0]
-        path = f'{ftpdir}/{filename}'
-        processed_files.append(f'{src_path}/{filename}')
+    if not ((this_datetime.hour == 3) and (this_datetime.minute == 0)):
+        this_datetime = this_datetime + timedelta(days=1)
+        this_datetime = this_datetime.replace(hour=3, minute=0)
+
+    day_complete = False
+    while True:
+        datetimes = [this_datetime + timedelta(minutes=30*i) for i in range(48)]
+        urls, filenames = [], []
+        for t in datetimes:
+            year = t.year
+            doy = str((t - datetime(year, 1, 1)).days + 1).zfill(3)
+            month = str(t.month).zfill(2)
+            day = str(t.day).zfill(2)
+            hour = str(t.hour).zfill(2)
+            min0 = str(t.minute).zfill(2)
+            min1 = t.minute + 29
+            minutes = str(t.hour*60+t.minute).zfill(4)
+            filename = f'3B-HHR-E.MS.MRG.3IMERG.{year}{month}{day}-S{hour}{min0}00-E{hour}{min1}59.{minutes}.V05B.RT-H5'
+            urls.append(f"ftp://{url}/NRTPUB/imerg/early/{year}{month}/{filename}")
+            filenames.append(filename)
+        with open('tmp/gpm_list.txt', 'w') as f:
+            f.write('\n'.join(urls))
         try:
-            f = h5py.File(f'{src_path}/{filename}', 'r')
-            log.write(f'Already downloaded')
+            subprocess.check_call(f'aria2c -x 16 -i tmp/gpm_list.txt -d {src_path} --ftp-user={login} --ftp-passwd={login} --continue=true'.split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except:
-            log.write(f'Downloading')
-            with open(f'{src_path}/{filename}', 'wb') as f:
-                downloaded = False
-                while not downloaded:
-                    try:
-                        ftp.retrbinary(f'RETR {path}', f.write)
-                        downloaded = True
-                    except:
-                        ftp = ftp_login(url, login, 'NRTPUB/imerg/early', log)
-            file_df.loc[file_df.name==filename, 'downloaded'] = True
+            return day_complete
+
+        day_complete = True
+        for filename, dt in zip(filenames, datetimes):
             f = h5py.File(f'{src_path}/{filename}', 'r')
-        file_date = file_df.index[file_df.name==filename][0].to_pydatetime() - timedelta(hours=utc_offset)
-        data = np.array(f['Grid/precipitationCal'])[x0:x1, y0:y1].transpose()[::-1] / 2 # divide by 2 because in mm/h
-        np.clip(data, 0, np.inf, out=data)
-        f.close()
-        this_date = file_date.date()
-        p_1d_filename = 'p_1d_' + str(this_date) + '.npy'
-        if p_1d_filename in status.p_1d.tolist():
-            this_data = data + np.load(shrink_dir + 'orig_' + p_1d_filename)
-            log.write('Added to ' + p_1d_filename)
-        else:
-            this_data = data
-        np.save(shrink_dir + 'orig_' + p_1d_filename[:-4], this_data)
-        if pd.isnull(status.loc[status['p_30m'].tolist().index(filename), 'p_1d']):
-            status.loc[status['p_30m'].tolist().index(filename), ['date', 'p_1d']] = this_date, p_1d_filename
-        else:
-            status.loc[len(status)] = this_date, p_1d_filename, filename
-        if len(status.date[status.date == this_date]) == 48: # there must be 48 half-hour precipitation estimates for one day to be complete
-            corr_p = np.zeros((20, 24))
-            resized_data = resize(this_data, 0.4)
-            for this_region in ['coast', 'inland', 'regina']:
-                #this_mask = resize(mask[this_region], 2.5)
-                corr_p += np.interp(resized_data, p_corr_vs_sat_per_month_per_region['trmm_3b42rt']['[2000-03-01 06:00:00+00:00, 2014-01-01 06:00:00+00:00]'][this_date.month][this_region].index.values, p_corr_vs_sat_per_month_per_region['trmm_3b42rt']['[2000-03-01 06:00:00+00:00, 2014-01-01 06:00:00+00:00]'][this_date.month][this_region]['corr'].values) * mask[this_region]
-            np.clip(corr_p, 0., np.inf, out=corr_p)
-            np.save(shrink_dir + p_1d_filename[:-4], corr_p)
-            if not keepgpm:
-                for fpath in processed_files:
-                    if os.path.exists(fpath):
-                        os.remove(fpath)
-                        log.write(f'Removed file {os.path.basename(fpath)}')
-                processed_files = []
-    status = status.sort_values(by=['date'])
-    status.index = range(len(status))
-    status.to_pickle(shrink_dir + '/status.p')
-    ftp.quit()
+            data = np.array(f['Grid/precipitationCal'])[x0:x1, y0:y1].transpose()[::-1] / 2 # divide by 2 because in mm/h
+            data = np.clip(data, 0, np.inf)
+            f.close()
+            this_date = (dt - timedelta(hours=3)).date() # French Guiana is UTC-3
+            p_1d_filename = f'p_1d_{this_date}.npy'
+            if p_1d_filename in status.p_1d.tolist():
+                this_data = data + np.load(shrink_dir + 'orig_' + p_1d_filename)
+            else:
+                this_data = data
+                log.write('Created ' + p_1d_filename)
+            log.write('Added ' + filename)
+            np.save(shrink_dir + 'orig_' + p_1d_filename[:-4], this_data)
+            status.loc[dt] = this_date, p_1d_filename
+            status.to_pickle(f'{shrink_dir}/status.p')
+        this_datetime = this_datetime + timedelta(days=1)
+
+        corr_p = np.zeros((20, 24))
+        resized_data = resize(this_data, 0.4)
+        for this_region in ['coast', 'inland', 'regina']:
+            corr_p += np.interp(resized_data, p_corr_vs_sat_per_month_per_region['trmm_3b42rt']['[2000-03-01 06:00:00+00:00, 2014-01-01 06:00:00+00:00]'][this_date.month][this_region].index.values, p_corr_vs_sat_per_month_per_region['trmm_3b42rt']['[2000-03-01 06:00:00+00:00, 2014-01-01 06:00:00+00:00]'][this_date.month][this_region]['corr'].values) * mask[this_region]
+        np.clip(corr_p, 0., np.inf, out=corr_p)
+        np.save(shrink_dir + p_1d_filename[:-4], corr_p)
+        shutil.rmtree(src_path, ignore_errors=True)
+        os.makedirs(src_path, exist_ok=True)
 
 def make_p_csv(shrink_dir, csv_dir, p_day_nb):
     """Make the precipitation CSV file. It consists of the 2D precipitation covering the past 'p_day_nb' days in the 6N-1N/57W-51W region."""
     status = pd.read_pickle(shrink_dir + '/status.p')
-    dates, filenames2 = [], []
-    for dirname, dirnames, filenames in os.walk(shrink_dir):
-        for filename in filenames:
-            if filename.startswith('p_1d_'):
-                this_date = date(int(filename[5:9]), int(filename[10:12]), int(filename[13:15]))
-                if len(status.date[status.date == this_date]) == 48:
-                    dates.append(this_date)
-                    filenames2.append(filename)
-    tmp = DataFrame({'dates': dates, 'filenames': filenames2})
-    tmp = tmp.sort_values(by=['dates'])
-    p_dates = list(tmp['dates'].values[-p_day_nb:])
-    p_filenames = list(tmp['filenames'].values[-p_day_nb:])
+    df = status.drop_duplicates(['date', 'p_1d'])
+    dates = df.date.tolist()
+    filenames = df.p_1d.tolist()
+    p_dates = dates[-p_day_nb:]
+    p_filenames = filenames[-p_day_nb:]
     
     lons = [-57., -51.]
     lats = [1., 6.]
@@ -279,19 +162,15 @@ def make_p_csv(shrink_dir, csv_dir, p_day_nb):
 def get_pe_ws(shrink_dir, ws_dir, ws_names, reset=False):
     """Get precipitation and potential evapotranspiration over the catchments. The catchments' name are listed in 'ws_names', there masks are located in 'ws_dir/mask'."""
     status = pd.read_pickle(shrink_dir + '/status.p')
-    dates_1d = list(set(status.date.tolist()))
-    dates_1d.sort()
-    dates_1d_complete = []
-    for this_date in dates_1d:
-        if len(status.date[status.date == this_date]) == 48:
-            dates_1d_complete.append(this_date)
+    df = status.drop_duplicates(['date'])
+    dates = df.date.tolist()
     if reset:
-        peq = DataFrame({**{'P(' + this_ws + ')': np.nan for this_ws in ws_names}, **{'E(' + this_ws + ')': np.nan for this_ws in ws_names}, **{'Q(' + this_ws + ')': np.nan for this_ws in ws_names}, **{'GR4J(' + this_ws + ')': np.nan for this_ws in ws_names}}, index=dates_1d_complete)
-        new_dates = list(set(peq.index.tolist()))
-        peq.to_pickle(ws_dir + 'peq.p')
+        peq = DataFrame({**{'P(' + this_ws + ')': np.nan for this_ws in ws_names}, **{'E(' + this_ws + ')': np.nan for this_ws in ws_names}, **{'Q(' + this_ws + ')': np.nan for this_ws in ws_names}, **{'GR4J(' + this_ws + ')': np.nan for this_ws in ws_names}}, index=dates)
+        new_dates = peq.index.tolist()
+        peq.to_pickle(f'{ws_dir}peq.p')
     else:
-        peq = pd.read_pickle(ws_dir + '/peq.p')
-        new_dates = list(set(peq.index.tolist()) ^ set(dates_1d_complete))
+        peq = pd.read_pickle(f'{ws_dir}/peq.p')
+        new_dates = list(set(peq.index.tolist()) ^ set(dates))
     ws_mask = {}
     for this_ws in ws_names:
         ws_filename = this_ws.lower().replace(' ', '_')
@@ -312,15 +191,17 @@ def get_q_ws(ws_dir, ws_names, gr4j_x):
     peq = pd.read_pickle(ws_dir + '/peq.p')
     gr4j_s = {}
     for this_ws in ws_names:
-        _, gr4j_s[this_ws] = gr4j(gr4j_x[this_ws], [0., 0.], None)
+        if this_ws in list(gr4j_x.keys()):
+            _, gr4j_s[this_ws] = gr4j(gr4j_x[this_ws], [0., 0.], None)
     for this_date in peq.index.tolist():
         for this_ws in ws_names:
-            if pd.isnull(peq.loc[this_date, 'Q(' + this_ws + ')']):
-                this_q, gr4j_s[this_ws] = gr4j(gr4j_x[this_ws], [peq.loc[this_date, 'P(' + this_ws + ')'], peq.loc[this_date, 'E(' + this_ws + ')']], gr4j_s[this_ws])
-                peq.loc[this_date, 'GR4J(' + this_ws + ')'] = str(gr4j_s[this_ws])
-                peq.loc[this_date, 'Q(' + this_ws + ')'] = this_q
-            else:
-                gr4j_s[this_ws] = [float(this_s) for this_s in peq['GR4J(' + this_ws + ')'][this_date].replace('[', '').replace(']', '').replace(' ', '').split(',')]
+            if this_ws in list(gr4j_x.keys()):
+                if pd.isnull(peq.loc[this_date, 'Q(' + this_ws + ')']):
+                    this_q, gr4j_s[this_ws] = gr4j(gr4j_x[this_ws], [peq.loc[this_date, 'P(' + this_ws + ')'], peq.loc[this_date, 'E(' + this_ws + ')']], gr4j_s[this_ws])
+                    peq.loc[this_date, 'GR4J(' + this_ws + ')'] = str(gr4j_s[this_ws])
+                    peq.loc[this_date, 'Q(' + this_ws + ')'] = this_q
+                else:
+                    gr4j_s[this_ws] = [float(this_s) for this_s in peq['GR4J(' + this_ws + ')'][this_date].replace('[', '').replace(']', '').replace(' ', '').split(',')]
     peq.to_pickle(ws_dir + '/peq.p')
 
 def make_q_json(ws_dir, csv_dir, q_day_nb, ws_names):
@@ -380,6 +261,7 @@ def main(reset, logfile, printout, keepgpm, login, fromdate):
     url = 'jsimpson.pps.eosdis.nasa.gov'
     # create tmp directory, in which there is log.txt where debugging information is written
     os.makedirs('tmp', exist_ok=True)
+    shutil.rmtree('gpm_data', ignore_errors=True)
     os.makedirs('gpm_data', exist_ok=True)
     os.makedirs('gpm_csv', exist_ok=True)
     os.makedirs('gpm_ws', exist_ok=True)
@@ -401,15 +283,14 @@ def main(reset, logfile, printout, keepgpm, login, fromdate):
             'Maripasoula':      [3003.1886179611165, -2.2929565882464029, 116.05308733707037, 4.4106266442720621],
             'Langa Tabiki':     [2677.4118727879959, -1.7274632708443527, 136.1150157663804, 4.6408104323814863]
             }
-    ws_names = list(gr4j_x.keys()) + ['Tapanahony']
+    ws_names = list(gr4j_x.keys())
     while True: # program main loop
-        get_new_files(login, url, log, ftp_dst_dir, fromdate, reset)
-        shrink(login, url, log, ftp_dst_dir, shrink_dir, utc_offset, keepgpm, reset)
-        make_p_csv(shrink_dir, csv_dir, p_day_nb)
-        get_pe_ws(shrink_dir, ws_dir, ws_names, reset)
-        get_q_ws(ws_dir, ws_names, gr4j_x)
-        make_q_json(ws_dir, csv_dir, q_day_nb, ws_names)
-        make_download_files(shrink_dir, ws_dir, csv_dir, ws_names, fromdate)
+        if get_gpm(url, login, log, ftp_dst_dir, shrink_dir, utc_offset, keepgpm, fromdate, reset):
+            make_p_csv(shrink_dir, csv_dir, p_day_nb)
+            get_pe_ws(shrink_dir, ws_dir, ws_names, reset)
+            get_q_ws(ws_dir, ws_names, gr4j_x)
+            make_q_json(ws_dir, csv_dir, q_day_nb, ws_names)
+            make_download_files(shrink_dir, ws_dir, csv_dir, ws_names, fromdate)
         reset = False
         log.write('Now going to sleep...')
         sleep(1800) # going to sleep for half an hour
