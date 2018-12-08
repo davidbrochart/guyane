@@ -401,7 +401,7 @@ def main(reset, logfile, printout, keepgpm, login, fromdate):
             'Maripasoula':      [3003.1886179611165, -2.2929565882464029, 116.05308733707037, 4.4106266442720621],
             'Langa Tabiki':     [2677.4118727879959, -1.7274632708443527, 136.1150157663804, 4.6408104323814863]
             }
-    ws_names = list(gr4j_x.keys())
+    ws_names = list(gr4j_x.keys()) + ['Tapanahony']
     while True: # program main loop
         get_new_files(login, url, log, ftp_dst_dir, fromdate, reset)
         shrink(login, url, log, ftp_dst_dir, shrink_dir, utc_offset, keepgpm, reset)
