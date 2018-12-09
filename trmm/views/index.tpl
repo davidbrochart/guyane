@@ -41,18 +41,18 @@
       }
     </style>
     <body>
-      <link rel="stylesheet" type="text/css" href="static/main.css">
-      <link rel="stylesheet" href="static/d3.slider.css" />
-      <script src="static/jquery-1.8.3.js"></script>
+      <link rel="stylesheet" type="text/css" href="trmm/static/main.css">
+      <link rel="stylesheet" href="trmm/static/d3.slider.css" />
+      <script src="trmm/static/jquery-1.8.3.js"></script>
       <link href="//netdna.bootstrapcdn.com/bootstrap/3.0.0/css/bootstrap.min.css" rel="stylesheet">
       <script src="//netdna.bootstrapcdn.com/bootstrap/3.0.0/js/bootstrap.min.js"></script>
-      <script src="static/d3.min.js"></script>
-      <script src="static/cubism.v1.min.js"></script>
-      <script src="static/topojson.v1.min.js"></script>
-      <script src="static/d3.slider.js"></script>
-      <script src="static/underscore-min.js"></script>
-      <script type="text/javascript" src="static/iframeResizer.contentWindow.min.js"></script>
-      <script src="static/minpubsub.js"></script>
+      <script src="trmm/static/d3.min.js"></script>
+      <script src="trmm/static/cubism.v1.min.js"></script>
+      <script src="trmm/static/topojson.v1.min.js"></script>
+      <script src="trmm/static/d3.slider.js"></script>
+      <script src="trmm/static/underscore-min.js"></script>
+      <script type="text/javascript" src="trmm/static/iframeResizer.contentWindow.min.js"></script>
+      <script src="trmm/static/minpubsub.js"></script>
 
       <input type="hidden" id="river0" value="{{rivers[0][0]}}" />
       <input type="hidden" id="river1" value="{{rivers[1][0]}}" />
@@ -83,18 +83,18 @@
         </div>
       </div>
 
-      <a href="{{this_host}}/data/pq_1d.csv">{{param['download_pq_1d']}}</a>
+      <a href="{{this_host}}/trmm/data/pq_1d.csv">{{param['download_pq_1d']}}</a>
       <br>
-      <a href="{{this_host}}/data/pq_1m.csv">{{param['download_pq_1m']}}</a>
+      <a href="{{this_host}}/trmm/data/pq_1m.csv">{{param['download_pq_1m']}}</a>
       <br>
-      <a href="{{this_host}}/data/pq_1y.csv">{{param['download_pq_1y']}}</a>
+      <a href="{{this_host}}/trmm/data/pq_1y.csv">{{param['download_pq_1y']}}</a>
       <br>
-      <a href="{{this_host}}/data/p2d_1d.zip">{{param['download_p2d_1d']}}</a>
+      <a href="{{this_host}}/trmm/data/p2d_1d.zip">{{param['download_p2d_1d']}}</a>
       <br>
 
-      <script src="static/rainfall.js"></script>
+      <script src="trmm/static/rainfall.js"></script>
 
-      <script src="static/streamflow.js"></script>
+      <script src="trmm/static/streamflow.js"></script>
 
     </body>
     
