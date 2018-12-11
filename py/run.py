@@ -1,8 +1,7 @@
 import click
 import pickle
 import numpy as np
-from datetime import date, datetime, timedelta
-import calendar
+from datetime import datetime, timedelta
 from time import sleep
 import os
 import pandas as pd
@@ -58,7 +57,6 @@ def get_gpm(url, login, log, src_path, shrink_dir, keepgpm, fromdate, reset=Fals
         urls, filenames = [], []
         for t in datetimes:
             year = t.year
-            doy = str((t - datetime(year, 1, 1)).days + 1).zfill(3)
             month = str(t.month).zfill(2)
             day = str(t.day).zfill(2)
             hour = str(t.hour).zfill(2)
@@ -113,13 +111,13 @@ def make_p_csv(shrink_dir, csv_dir, p_day_nb):
     filenames = df.p_1d.tolist()
     p_dates = dates[-p_day_nb:]
     p_filenames = filenames[-p_day_nb:]
-    
+
     lons = [-57., -51.]
     lats = [1., 6.]
     delta_lon, delta_lat = .1, .1
     col_nb = int((lons[1] - lons[0]) / delta_lon)
-    lin_nb = int((lats[1] - lats[0]) / delta_lat)
-    
+    row_nb = int((lats[1] - lats[0]) / delta_lat)
+
     f = open(csv_dir + 'p_data.csv', 'wt')
     f.write('date')
     header = True
@@ -134,9 +132,9 @@ def make_p_csv(shrink_dir, csv_dir, p_day_nb):
             if header:
                 f.write(',' + str(i))
             else:
-                f.write(',' + str(data_array[int((col_nb * lin_nb - 1 - i) / col_nb),  i % col_nb]))
+                f.write(',' + str(data_array[int((col_nb * row_nb - 1 - i) / col_nb),  i % col_nb]))
             i += 1
-            if i == col_nb * lin_nb:
+            if i == col_nb * row_nb:
                 done = True
         f.write('\n')
         if not header:
@@ -149,6 +147,8 @@ def get_pe_ws(shrink_dir, ws_dir, ws_names, reset=False):
     status = pd.read_pickle(shrink_dir + '/status.p')
     df = status.drop_duplicates(['date'])
     dates = df.date.tolist()
+    if len(status.loc[status.date==dates[-1]]) != 48: # last date might not be complete
+        dates.pop()
     if reset:
         peq = DataFrame({**{'P(' + this_ws + ')': np.nan for this_ws in ws_names}, **{'E(' + this_ws + ')': np.nan for this_ws in ws_names}, **{'Q(' + this_ws + ')': np.nan for this_ws in ws_names}, **{'GR4J(' + this_ws + ')': np.nan for this_ws in ws_names}}, index=dates)
         new_dates = peq.index.tolist()
@@ -203,21 +203,22 @@ def make_q_json(ws_dir, csv_dir, q_day_nb, ws_names):
 
 def make_download_files(shrink_dir, ws_dir, csv_dir, ws_names, from_date):
     """Make the files to be downloaded: catchment rainfall and streamflow (daily, monthly, yearly), 2D rainfall."""
+    from_date_dt = datetime.strptime(from_date, "%Y-%m-%d").date()
     peq = pd.read_pickle(ws_dir + '/peq.p')
     cols = []
     for this_peq in ['P', 'Q']:
         for this_ws in ws_names:
             cols.append(this_peq + '(' + this_ws + ')')
-    #peq.index = pd.date_range(peq.index[0], peq.index[-1])
+    peq.index = pd.date_range(peq.index[0], peq.index[-1])
     peq.index.names = ['Dates']
-    peq = peq.loc[from_date:, cols]
+    peq = peq.loc[from_date_dt:, cols]
     peq.applymap(lambda x: '%.1f' % x).to_csv(csv_dir + '/pq_1d.csv')
     peq.resample('M').sum().loc[:, cols].applymap(lambda x: '%.1f' % x).to_csv(csv_dir + '/pq_1m.csv')
     peq.resample('A').sum().loc[:, cols].applymap(lambda x: '%.1f' % x).to_csv(csv_dir + '/pq_1y.csv')
 
     status = pd.read_pickle(shrink_dir + '/status.p')
     driver = gdal.GetDriverByName('GTiff')
-    for this_file in status[status.date >= datetime.strptime(from_date, "%Y-%m-%d").date()].loc[:, 'p_1d'].values:
+    for this_file in status[status.date >= from_date_dt].loc[:, 'p_1d'].values:
         tif_file = 'p2d_1d/' + this_file[:-4] + '.tif'
         if not os.path.exists(tif_file):
             this_data = np.load(shrink_dir + this_file)
