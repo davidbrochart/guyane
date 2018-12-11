@@ -13,25 +13,8 @@ from gr4j import gr4j
 import h5py
 import subprocess
 import shutil
+from skimage.transform import resize
 import grid
-
-def resize(data, ratio):
-    """Resize 'data' by resampling with 'ratio'."""
-    new_data = np.zeros(tuple(int(i * ratio) for i in data.shape))
-    if ratio < 1:
-        data_nb = np.zeros(tuple(int(i * ratio) for i in data.shape))
-        for y in range(data.shape[0]):
-            for x in range(data.shape[1]):
-                new_y = int(y * ratio)
-                new_x = int(x * ratio)
-                new_data[new_y, new_x] += data[y, x]
-                data_nb[new_y, new_x] += 1
-        new_data /= data_nb
-    else:
-        for y in range(new_data.shape[0]):
-            for x in range(new_data.shape[1]):
-                new_data[y, x] = data[int(y // ratio), int(x // ratio)]
-    return new_data
 
 class Log:
     """Logging to a file and/or to stdout."""
@@ -48,7 +31,7 @@ class Log:
             self.f.write(f'{string}\n')
             self.f.flush()
 
-def get_gpm(url, login, log, src_path, shrink_dir, utc_offset, keepgpm, fromdate, reset=False):
+def get_gpm(url, login, log, src_path, shrink_dir, keepgpm, fromdate, reset=False):
     """Get the original GPM files for 1N-6N/57W-51W (French Guiana region)."""
     if reset:
         status = DataFrame(data={'datetime': [], 'date': [], 'p_1d': []}).set_index('datetime')
@@ -112,13 +95,15 @@ def get_gpm(url, login, log, src_path, shrink_dir, utc_offset, keepgpm, fromdate
         this_datetime = this_datetime + timedelta(days=1)
 
         corr_p = np.zeros((20, 24))
-        resized_data = resize(this_data, 0.4)
+        vmax = np.max(this_data)
+        resized_data = resize(this_data/vmax, (20, 24), anti_aliasing=False, mode='constant') * vmax
         for this_region in ['coast', 'inland', 'regina']:
             corr_p += np.interp(resized_data, p_corr_vs_sat_per_month_per_region['trmm_3b42rt']['[2000-03-01 06:00:00+00:00, 2014-01-01 06:00:00+00:00]'][this_date.month][this_region].index.values, p_corr_vs_sat_per_month_per_region['trmm_3b42rt']['[2000-03-01 06:00:00+00:00, 2014-01-01 06:00:00+00:00]'][this_date.month][this_region]['corr'].values) * mask[this_region]
         np.clip(corr_p, 0., np.inf, out=corr_p)
         np.save(shrink_dir + p_1d_filename[:-4], corr_p)
-        shutil.rmtree(src_path, ignore_errors=True)
-        os.makedirs(src_path, exist_ok=True)
+        if not keepgpm:
+            shutil.rmtree(src_path, ignore_errors=True)
+            os.makedirs(src_path, exist_ok=True)
 
 def make_p_csv(shrink_dir, csv_dir, p_day_nb):
     """Make the precipitation CSV file. It consists of the 2D precipitation covering the past 'p_day_nb' days in the 6N-1N/57W-51W region."""
@@ -175,7 +160,6 @@ def get_pe_ws(shrink_dir, ws_dir, ws_names, reset=False):
     for this_ws in ws_names:
         ws_filename = this_ws.lower().replace(' ', '_')
         ws_mask[this_ws] = np.load(ws_dir + '/mask/' + ws_filename + '.npy')
-        #ws_mask[this_ws] = resize(np.load(ws_dir + '/mask/' + ws_filename + '.npy'), 2.5)
     etp = [i / 30. for i in [101, 110, 126, 125, 108, 105, 120, 145, 160, 160, 155, 150]]
     for this_date in new_dates:
         this_p = np.load(shrink_dir + '/p_1d_' + str(this_date) + '.npy')
@@ -224,7 +208,7 @@ def make_download_files(shrink_dir, ws_dir, csv_dir, ws_names, from_date):
     for this_peq in ['P', 'Q']:
         for this_ws in ws_names:
             cols.append(this_peq + '(' + this_ws + ')')
-    peq.index = pd.date_range(peq.index[0], peq.index[-1])
+    #peq.index = pd.date_range(peq.index[0], peq.index[-1])
     peq.index.names = ['Dates']
     peq = peq.loc[from_date:, cols]
     peq.applymap(lambda x: '%.1f' % x).to_csv(csv_dir + '/pq_1d.csv')
@@ -269,7 +253,6 @@ def main(reset, logfile, printout, keepgpm, login, fromdate):
     log = Log(logfile, printout)
     # create (if doesn't exist) or load "file_df.pkl", this file keeps track of GPM files that have been downloaded
     ftp_dst_dir = 'gpm_data/'
-    utc_offset = 3 # 0 if UTC, 3 if French Guiana
     p_day_nb = 30
     q_day_nb = 1024
     shrink_dir = 'gpm_shrink/'
@@ -283,9 +266,9 @@ def main(reset, logfile, printout, keepgpm, login, fromdate):
             'Maripasoula':      [3003.1886179611165, -2.2929565882464029, 116.05308733707037, 4.4106266442720621],
             'Langa Tabiki':     [2677.4118727879959, -1.7274632708443527, 136.1150157663804, 4.6408104323814863]
             }
-    ws_names = list(gr4j_x.keys())
+    ws_names = list(gr4j_x.keys()) + ['Tapanahony']
     while True: # program main loop
-        if get_gpm(url, login, log, ftp_dst_dir, shrink_dir, utc_offset, keepgpm, fromdate, reset):
+        if get_gpm(url, login, log, ftp_dst_dir, shrink_dir, keepgpm, fromdate, reset):
             make_p_csv(shrink_dir, csv_dir, p_day_nb)
             get_pe_ws(shrink_dir, ws_dir, ws_names, reset)
             get_q_ws(ws_dir, ws_names, gr4j_x)

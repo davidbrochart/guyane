@@ -60,7 +60,7 @@ def server_data(filename):
     resp.set_header('Cache-Control', 'no-cache')
     return resp
 
-@app.route('/trmm')
+@app.route('/trmm', name='trmm')
 @view('trmm/views/index.tpl')
 def index():
     """Route to the index."""
@@ -73,7 +73,7 @@ def index():
     return {'param': param[this_language], 'rivers': rivers[this_language], 'this_host': this_host}
 
 @click.command()
-@click.option('--ip', default='localhost', help='IP address the web server listens to.')
+@click.option('--ip', default='guyane.irstea.fr', help='IP address the web server listens to.')
 @click.option('--port', default='8080', help='Port number the web server listens to.')
 def main(ip, port):
     run(app, host=ip, port=port)
