@@ -30,7 +30,7 @@ class Log:
             self.f.write(f'{string}\n')
             self.f.flush()
 
-def get_gpm(url, login, log, src_path, shrink_dir, keepgpm, fromdate, reset=False):
+def get_gpm(url, login, log, src_path, shrink_dir, keepgpm, fromdate, todate, reset=False):
     """Get the original GPM files for 1N-6N/57W-51W (French Guiana region)."""
     if reset:
         status = DataFrame(data={'datetime': [], 'date': [], 'p_1d': []}).set_index('datetime')
@@ -39,6 +39,7 @@ def get_gpm(url, login, log, src_path, shrink_dir, keepgpm, fromdate, reset=Fals
         status = pd.read_pickle(shrink_dir + '/status.p')
         this_datetime = status.index[-1] + timedelta(minutes=30) # next GPM
 
+    to_date_dt = datetime.strptime(todate, "%Y-%m-%d").date()
     mask = pickle.load(open(shrink_dir + '/corr/mask.pkl', 'rb'))
     p_corr_vs_sat_per_month_per_region = pickle.load(open(shrink_dir + '/corr/p_corr_vs_sat_per_month_per_region.pkl', 'rb'))
 
@@ -52,6 +53,7 @@ def get_gpm(url, login, log, src_path, shrink_dir, keepgpm, fromdate, reset=Fals
         this_datetime = this_datetime.replace(hour=3, minute=0)
 
     day_complete = False
+    skip = False
     while True:
         datetimes = [this_datetime + timedelta(minutes=30*i) for i in range(48)]
         urls, filenames = [], []
@@ -70,38 +72,43 @@ def get_gpm(url, login, log, src_path, shrink_dir, keepgpm, fromdate, reset=Fals
             f.write('\n'.join(urls))
         try:
             subprocess.check_call(f'aria2c -x 16 -i tmp/gpm_list.txt -d {src_path} --ftp-user={login} --ftp-passwd={login} --continue=true'.split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            skip = False
         except:
-            return day_complete
-
-        day_complete = True
-        for filename, dt in zip(filenames, datetimes):
-            f = h5py.File(f'{src_path}/{filename}', 'r')
-            data = np.array(f['Grid/precipitationCal'])[x0:x1, y0:y1].transpose()[::-1] / 2 # divide by 2 because in mm/h
-            data = np.clip(data, 0, np.inf)
-            f.close()
-            this_date = (dt - timedelta(hours=3)).date() # French Guiana is UTC-3
-            p_1d_filename = f'p_1d_{this_date}.npy'
-            if p_1d_filename in status.p_1d.tolist():
-                this_data = data + np.load(shrink_dir + 'orig_' + p_1d_filename)
+            if this_datetime.date() > to_date_dt:
+                return day_complete
             else:
-                this_data = data
-                log.write('Created ' + p_1d_filename)
-            log.write('Added ' + filename)
-            np.save(shrink_dir + 'orig_' + p_1d_filename[:-4], this_data)
-            status.loc[dt] = this_date, p_1d_filename
-            status.to_pickle(f'{shrink_dir}/status.p')
-        this_datetime = this_datetime + timedelta(days=1)
+                skip = True
 
-        corr_p = np.zeros((20, 24))
-        vmax = np.max(this_data)
-        resized_data = resize(this_data/vmax, (20, 24), anti_aliasing=False, mode='constant') * vmax
-        for this_region in ['coast', 'inland', 'regina']:
-            corr_p += np.interp(resized_data, p_corr_vs_sat_per_month_per_region['trmm_3b42rt']['[2000-03-01 06:00:00+00:00, 2014-01-01 06:00:00+00:00]'][this_date.month][this_region].index.values, p_corr_vs_sat_per_month_per_region['trmm_3b42rt']['[2000-03-01 06:00:00+00:00, 2014-01-01 06:00:00+00:00]'][this_date.month][this_region]['corr'].values) * mask[this_region]
-        np.clip(corr_p, 0., np.inf, out=corr_p)
-        np.save(shrink_dir + p_1d_filename[:-4], corr_p)
-        if not keepgpm:
-            shutil.rmtree(src_path, ignore_errors=True)
-            os.makedirs(src_path, exist_ok=True)
+        if not skip:
+            day_complete = True
+            for filename, dt in zip(filenames, datetimes):
+                f = h5py.File(f'{src_path}/{filename}', 'r')
+                data = np.array(f['Grid/precipitationCal'])[x0:x1, y0:y1].transpose()[::-1] / 2 # divide by 2 because in mm/h
+                data = np.clip(data, 0, np.inf)
+                f.close()
+                this_date = (dt - timedelta(hours=3)).date() # French Guiana is UTC-3
+                p_1d_filename = f'p_1d_{this_date}.npy'
+                if p_1d_filename in status.p_1d.tolist():
+                    this_data = data + np.load(shrink_dir + 'orig_' + p_1d_filename)
+                else:
+                    this_data = data
+                    log.write('Created ' + p_1d_filename)
+                log.write('Added ' + filename)
+                np.save(shrink_dir + 'orig_' + p_1d_filename[:-4], this_data)
+                status.loc[dt] = this_date, p_1d_filename
+                status.to_pickle(f'{shrink_dir}/status.p')
+            this_datetime = this_datetime + timedelta(days=1)
+
+            corr_p = np.zeros((20, 24))
+            vmax = np.max(this_data)
+            resized_data = resize(this_data/vmax, (20, 24), anti_aliasing=False, mode='constant') * vmax
+            for this_region in ['coast', 'inland', 'regina']:
+                corr_p += np.interp(resized_data, p_corr_vs_sat_per_month_per_region['trmm_3b42rt']['[2000-03-01 06:00:00+00:00, 2014-01-01 06:00:00+00:00]'][this_date.month][this_region].index.values, p_corr_vs_sat_per_month_per_region['trmm_3b42rt']['[2000-03-01 06:00:00+00:00, 2014-01-01 06:00:00+00:00]'][this_date.month][this_region]['corr'].values) * mask[this_region]
+            np.clip(corr_p, 0., np.inf, out=corr_p)
+            np.save(shrink_dir + p_1d_filename[:-4], corr_p)
+            if not keepgpm:
+                shutil.rmtree(src_path, ignore_errors=True)
+                os.makedirs(src_path, exist_ok=True)
 
 def make_p_csv(shrink_dir, csv_dir, p_day_nb):
     """Make the precipitation CSV file. It consists of the 2D precipitation covering the past 'p_day_nb' days in the 6N-1N/57W-51W region."""
@@ -240,7 +247,8 @@ def make_download_files(shrink_dir, ws_dir, csv_dir, ws_names, from_date):
 @click.option('--keepgpm', is_flag=True, help='Keep GPM downloaded files.')
 @click.option('--login', default='david.brochart@free.fr', help='Email address to log into FTP server.')
 @click.option('--fromdate', default='2014-03-12', help='Date from which to process precipitation data.')
-def main(reset, logfile, printout, keepgpm, login, fromdate):
+@click.option('--todate', default='2018-12-10', help='Date until which to process precipitation data without waiting (but keep on processing after this date anyway).')
+def main(reset, logfile, printout, keepgpm, login, fromdate, todate):
     if not os.path.exists('../data/grid.json'):
         grid.make()
     url = 'jsimpson.pps.eosdis.nasa.gov'
@@ -269,7 +277,7 @@ def main(reset, logfile, printout, keepgpm, login, fromdate):
             }
     ws_names = list(gr4j_x.keys()) + ['Tapanahony']
     while True: # program main loop
-        if get_gpm(url, login, log, ftp_dst_dir, shrink_dir, keepgpm, fromdate, reset):
+        if get_gpm(url, login, log, ftp_dst_dir, shrink_dir, keepgpm, fromdate, todate, reset):
             make_p_csv(shrink_dir, csv_dir, p_day_nb)
             get_pe_ws(shrink_dir, ws_dir, ws_names, reset)
             get_q_ws(ws_dir, ws_names, gr4j_x)
