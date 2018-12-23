@@ -29,8 +29,8 @@ def uh2(j, x4):
 def gr4j(_x, _obs, _state = None):
     x1, x2, x3, x4 = _x
     if _state == None:
-        s = 0.
-        r = 0.
+        s = x1 / 2.
+        r = x3 / 2.
         pr_prev = [0.] * int(2. * x4)
     else:
         s = _state[0]
