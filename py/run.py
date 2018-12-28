@@ -82,10 +82,13 @@ def get_gpm(url, login, log, src_path, shrink_dir, keepgpm, fromdate, todate, re
         if not skip:
             day_complete = True
             for filename, dt in zip(filenames, datetimes):
-                f = h5py.File(f'{src_path}/{filename}', 'r')
-                data = np.array(f['Grid/precipitationCal'])[x0:x1, y0:y1].transpose()[::-1] / 2 # divide by 2 because in mm/h
-                data = np.clip(data, 0, np.inf)
-                f.close()
+                try:
+                    f = h5py.File(f'{src_path}/{filename}', 'r')
+                    data = np.array(f['Grid/precipitationCal'])[x0:x1, y0:y1].transpose()[::-1] / 2 # divide by 2 because in mm/h
+                    data = np.clip(data, 0, np.inf)
+                    f.close()
+                except:
+                    data = np.zeros((y1-y0, x1-x0), dtype=np.float32)
                 this_date = (dt - timedelta(hours=3)).date() # French Guiana is UTC-3
                 p_1d_filename = f'p_1d_{this_date}.npy'
                 if p_1d_filename in status.p_1d.tolist():
